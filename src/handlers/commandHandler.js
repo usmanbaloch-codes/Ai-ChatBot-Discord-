@@ -1,171 +1,169 @@
-// src/handlers/messageHandler.js - Main message processing
-import { generateResponse, analyzeMessageSentiment } from '../ai/engine.js';
-import { sendHumanResponse, shouldIgnore, maybeReact } from '../ai/humanizer.js';
-import { rememberMessage } from '../memory/shortTermMemory.js';
-import { recordInteraction } from '../memory/relationshipManager.js';
-import { rememberLongTerm, MEMORY_TYPES } from '../memory/longTermMemory.js';
-import { shouldPassivelyRespond, isInterestingMessage } from '../systems/passiveChat.js';
-import { isSleeping, isSleepy, getSleepyResponse } from '../systems/sleepMode.js';
-import { maybeShiftMood } from '../systems/moodSystem.js';
-import { detectTone, shouldAvoidMessage } from '../systems/toneDetector.js';
-import { isRateLimited, recordInteraction as recordRateInteraction, isMentionCooldown, setMentionCooldown } from '../systems/cooldownManager.js';
-import { isBotMentioned, stripMention, isChannelAllowed, getConfig, random } from '../utils/helpers.js';
-import { getChannelSettings, addShortTermMemory } from '../memory/database.js';
+// src/handlers/commandHandler.js - Slash command registration
+import {
+  ChannelType,
+  PermissionFlagsBits,
+  REST,
+  Routes,
+  SlashCommandBuilder
+} from 'discord.js';
+import { getPersonalityList } from '../ai/personalities.js';
+import { getAvailableMoods } from '../systems/moodSystem.js';
 import { logger } from '../utils/logger.js';
 
-const config = getConfig();
+function buildCommands() {
+  const personalityChoices = getPersonalityList()
+    .slice(0, 25)
+    .map(p => ({ name: p.name, value: p.key }));
 
-export async function handleMessage(message, client) {
-  try {
-    if (message.author.id === client.user.id) return;
-    if (message.author.bot) return;
-    if (!message.guild) return;
-    if (!isChannelAllowed(message.channel.id)) return;
+  const moodChoices = getAvailableMoods()
+    .slice(0, 25)
+    .map(m => ({ name: m.label, value: m.key }));
 
-    const channelSettings = getChannelSettings(message.channel.id);
-    if (channelSettings && !channelSettings.enabled) return;
+  return [
+    new SlashCommandBuilder()
+      .setName('personality')
+      .setDescription('Change Nadia\'s personality')
+      .addStringOption(option =>
+        option
+          .setName('type')
+          .setDescription('Choose a personality')
+          .setRequired(true)
+          .addChoices(...personalityChoices)
+      ),
 
-    const username = message.member?.displayName || message.author.username;
-    rememberMessage(
-      message.guild.id,
-      message.channel.id,
-      message.author.id,
-      username,
-      message.content,
-      false
-    );
+    new SlashCommandBuilder()
+      .setName('mood')
+      .setDescription('View or change Nadia\'s mood')
+      .addStringOption(option =>
+        option
+          .setName('set')
+          .setDescription('Set a new mood')
+          .setRequired(false)
+          .addChoices(...moodChoices)
+      ),
 
-    const mentioned = isBotMentioned(message, client);
+    new SlashCommandBuilder()
+      .setName('talklevel')
+      .setDescription('Set how talkative Nadia is')
+      .addIntegerOption(option =>
+        option
+          .setName('level')
+          .setDescription('Talk level from 1 to 10')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(10)
+      ),
 
-    if (mentioned) {
-      await handleMention(message, client, username);
-    } else {
-      await handlePassive(message, client, username);
-    }
+    new SlashCommandBuilder()
+      .setName('admin')
+      .setDescription('Admin controls for Nadia')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addSubcommand(sub =>
+        sub
+          .setName('passive')
+          .setDescription('Enable or disable passive chat')
+          .addBooleanOption(option =>
+            option
+              .setName('enabled')
+              .setDescription('Whether passive chat is enabled')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub
+          .setName('channel')
+          .setDescription('Enable or disable Nadia in a channel')
+          .addChannelOption(option =>
+            option
+              .setName('target')
+              .setDescription('Channel to configure')
+              .setRequired(true)
+              .addChannelTypes(
+                ChannelType.GuildText,
+                ChannelType.GuildAnnouncement,
+                ChannelType.PublicThread,
+                ChannelType.PrivateThread,
+                ChannelType.AnnouncementThread
+              )
+          )
+          .addBooleanOption(option =>
+            option
+              .setName('enabled')
+              .setDescription('Whether Nadia is enabled there')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub
+          .setName('reset')
+          .setDescription('Clear Nadia\'s stored memory for this server')
+      )
+      .addSubcommand(sub =>
+        sub
+          .setName('passivechance')
+          .setDescription('Set passive reply probability')
+          .addNumberOption(option =>
+            option
+              .setName('chance')
+              .setDescription('Value from 0 to 1, e.g. 0.08 = 8%')
+              .setRequired(true)
+              .setMinValue(0)
+              .setMaxValue(1)
+          )
+      ),
 
-  } catch (error) {
-    logger.error('Message handler error:', error);
-  }
+    new SlashCommandBuilder()
+      .setName('memory')
+      .setDescription('Manage Nadia\'s memory')
+      .addSubcommand(sub =>
+        sub
+          .setName('view')
+          .setDescription('See what Nadia remembers about you')
+      )
+      .addSubcommand(sub =>
+        sub
+          .setName('clear')
+          .setDescription('Clear short-term memory for this channel')
+      )
+      .addSubcommand(sub =>
+        sub
+          .setName('nickname')
+          .setDescription('Set what Nadia should call you')
+          .addStringOption(option =>
+            option
+              .setName('name')
+              .setDescription('Nickname')
+              .setRequired(true)
+              .setMaxLength(32)
+          )
+      ),
+
+    new SlashCommandBuilder()
+      .setName('status')
+      .setDescription('Show Nadia\'s current status and settings')
+  ].map(command => command.toJSON());
 }
 
-async function handleMention(message, client, username) {
-  const guildId = message.guild.id;
-  const channelId = message.channel.id;
+export async function registerCommands() {
+  const token = process.env.DISCORD_TOKEN;
+  const clientId = process.env.DISCORD_CLIENT_ID;
 
-  if (isMentionCooldown(channelId)) {
-    logger.debug('Mention cooldown active, skipping');
-    return;
+  if (!token) {
+    throw new Error('DISCORD_TOKEN is missing from .env');
   }
 
-  if (isRateLimited(message.author.id)) {
-    if (random() < 0.3) {
-      await sendHumanResponse(message.channel, 'bro chill 😭 itna spam mat karo', message);
-    }
-    return;
+  if (!clientId) {
+    throw new Error('DISCORD_CLIENT_ID is missing from .env');
   }
 
-  recordRateInteraction(message.author.id);
-  setMentionCooldown(channelId);
+  const commands = buildCommands();
+  const rest = new REST({ version: '10' }).setToken(token);
 
-  if (shouldAvoidMessage(message.content)) {
-    await sendHumanResponse(
-      message.channel,
-      'yaar this is something you should talk to someone you trust about. please take care of yourself ❤️',
-      message
-    );
-    return;
-  }
-
-  if (isSleeping()) {
-    if (random() < 0.7) return;
-    const sleepyResponse = getSleepyResponse();
-    await sendHumanResponse(message.channel, sleepyResponse, message);
-    return;
-  }
-
-  if (isSleepy() && random() < 0.3) {
-    const sleepyResponse = getSleepyResponse();
-    await sendHumanResponse(message.channel, sleepyResponse, message);
-    return;
-  }
-
-  const cleanContent = stripMention(message.content, client.user.id);
-
-  if (!cleanContent || cleanContent.length === 0) {
-    const emptyResponses = ['haan?', 'kya', 'hmm?', 'bolo', 'haan bolo', '?', 'what', 'ji?'];
-    const response = emptyResponses[Math.floor(Math.random() * emptyResponses.length)];
-    await sendHumanResponse(message.channel, response, message);
-    return;
-  }
-
-  const sentiment = await analyzeMessageSentiment(cleanContent);
-  recordInteraction(guildId, message.author.id, username, sentiment);
-  maybeShiftMood(guildId, sentiment);
-
-  const response = await generateResponse({
-    message,
-    content: cleanContent,
-    isPassive: false
-  });
-
-  const sent = await sendHumanResponse(message.channel, response, message);
-
-  if (sent) {
-    rememberMessage(
-      guildId,
-      channelId,
-      client.user.id,
-      config.bot.name,
-      response,
-      true
-    );
-  }
-
-  await maybeReact(message, 0.15);
-
-  logger.chat(message.guild.name, username, `[MENTION] ${cleanContent}`);
-  logger.chat(message.guild.name, config.bot.name, `[REPLY] ${response}`);
-}
-
-async function handlePassive(message, client, username) {
-  if (!isInterestingMessage(message.content)) return;
-
-  if (!shouldPassivelyRespond(message)) {
-    await maybeReact(message, 0.03);
-    return;
-  }
-
-  if (shouldIgnore(false)) return;
-  if (isRateLimited(message.author.id)) return;
-  if (shouldAvoidMessage(message.content)) return;
-
-  recordRateInteraction(message.author.id);
-
-  const response = await generateResponse({
-    message,
-    content: message.content,
-    isPassive: true
-  });
-
-  const shouldReply = random() < 0.6;
-
-  const sent = await sendHumanResponse(
-    message.channel,
-    response,
-    shouldReply ? message : null
+  logger.info(`📝 Registering ${commands.length} slash commands...`);
+  await rest.put(
+    Routes.applicationCommands(clientId),
+    { body: commands }
   );
 
-  if (sent) {
-    rememberMessage(
-      message.guild.id,
-      message.channel.id,
-      client.user.id,
-      config.bot.name,
-      response,
-      true
-    );
-  }
-
-  logger.chat(message.guild.name, username, `[PASSIVE TRIGGER] ${message.content}`);
-  logger.chat(message.guild.name, config.bot.name, `[PASSIVE REPLY] ${response}`);
+  logger.info('✅ Slash commands registered globally');
 }
