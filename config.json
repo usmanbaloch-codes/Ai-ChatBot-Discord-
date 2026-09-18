@@ -1,0 +1,39 @@
+{
+  "bot": {
+    "name": "Nadia",
+    "gender": "female",
+    "age": "20",
+    "defaultPersonality": "chill_pakistani",
+    "defaultMood": "normal",
+    "defaultTalkLevel": 5
+  },
+  "behavior": {
+    "typingSpeedCPM": 450,
+    "minReplyDelay": 800,
+    "maxReplyDelay": 4500,
+    "shortReplyChance": 0.3,
+    "ignoreChance": 0.05,
+    "passiveReplyChance": 0.08,
+    "passiveCooldown": 120000,
+    "mentionCooldown": 3000,
+    "maxContextMessages": 25,
+    "maxReplyLength": 300
+  },
+  "memory": {
+    "shortTermLimit": 50,
+    "longTermCleanupDays": 30,
+    "relationshipDecayDays": 14
+  },
+  "sleep": {
+    "enabled": true,
+    "sleepHour": 2,
+    "wakeHour": 8,
+    "timezone": "Asia/Karachi",
+    "sleepyResponses": true
+  },
+  "channels": {
+    "blacklist": [],
+    "whitelist": [],
+    "useWhitelist": false
+  }
+}
