@@ -1,7 +1,6 @@
 // src/handlers/eventHandler.js - Discord event handling
 import { ActivityType } from 'discord.js';
 import { handleMessage } from './messageHandler.js';
-import { handleInteraction } from '../commands/personality.js';
 import { dailyCleanup } from '../memory/database.js';
 import { logger } from '../utils/logger.js';
 import { getConfig, randomPick } from '../utils/helpers.js';
